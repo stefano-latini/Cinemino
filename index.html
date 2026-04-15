@@ -133,7 +133,7 @@ input, textarea { -webkit-appearance: none; appearance: none; }
 }
 .icon-btn-primary {
   background: var(--accent);
-  color: #fff;
+  color: var(--bg);
 }
 .icon-btn-primary:hover, .icon-btn-primary:active {
   background: var(--accent-soft);
@@ -666,66 +666,8 @@ function parseCSV(text) {
    Wikidata SPARQL gives us title+year+director+imdbId in a single CORS-enabled request.
    IMDb suggestion (unofficial) is used only as fallback if Wikidata returns nothing. */
 
-async function fetchWikidataSuggestions(query) {
-  const safe = query.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-  const sparql = `SELECT ?item ?itemLabel ?year (GROUP_CONCAT(DISTINCT ?dirLabel; separator=", ") AS ?directors) ?imdb ?image WHERE {
-  SERVICE wikibase:mwapi {
-    bd:serviceParam wikibase:endpoint "www.wikidata.org" .
-    bd:serviceParam wikibase:api "EntitySearch" .
-    bd:serviceParam mwapi:search "${safe}" .
-    bd:serviceParam mwapi:language "it" .
-    ?item wikibase:apiOutputItem mwapi:item .
-  }
-  ?item wdt:P31/wdt:P279* wd:Q11424 .
-  OPTIONAL { ?item wdt:P577 ?date . BIND(YEAR(?date) AS ?year) }
-  OPTIONAL {
-    ?item wdt:P57 ?dir .
-    ?dir rdfs:label ?dirLabel .
-    FILTER(LANG(?dirLabel) = "it" || LANG(?dirLabel) = "en")
-  }
-  OPTIONAL { ?item wdt:P345 ?imdb }
-  OPTIONAL { ?item wdt:P18 ?image }
-  SERVICE wikibase:label { bd:serviceParam wikibase:language "it,en" . ?item rdfs:label ?itemLabel . }
-}
-GROUP BY ?item ?itemLabel ?year ?imdb ?image
-ORDER BY DESC(?year)
-LIMIT 12`;
-  const url = `https://query.wikidata.org/sparql?format=json&query=${encodeURIComponent(sparql)}`;
-  try {
-    const r = await fetch(url, { headers: { "Accept": "application/sparql-results+json" } });
-    if (!r.ok) { console.warn("Wikidata SPARQL status", r.status); return []; }
-    const data = await r.json();
-    const rows = data.results?.bindings || [];
-    const seen = new Set();
-    const out = [];
-    for (const b of rows) {
-      const qid = (b.item?.value || "").split("/").pop();
-      if (!qid || seen.has(qid)) continue;
-      seen.add(qid);
-      // Wikidata image URL is the Commons Special:FilePath redirect;
-      // force https and request a 80px thumbnail
-      let poster = null;
-      if (b.image?.value) {
-        poster = b.image.value.replace(/^http:/, "https:") + "?width=200";
-      }
-      out.push({
-        id: b.imdb?.value || qid,
-        qid,
-        imdbId: b.imdb?.value || "",
-        title: b.itemLabel?.value || "",
-        year: b.year?.value ? parseInt(b.year.value) : null,
-        directors: b.directors?.value || "",
-        poster,
-        source: "wikidata"
-      });
-    }
-    return out.slice(0, 10);
-  } catch (e) {
-    console.warn("Wikidata error:", e);
-    return [];
-  }
-}
-
+/* IMDb suggestion endpoint — keyless, CORS-enabled, returns reliable poster URLs.
+   Used as PRIMARY source. Wikidata is queried only for the director (after pick). */
 async function fetchImdbSuggestions(query) {
   const q = query.trim().toLowerCase().replace(/[^a-z0-9\s]/gi, "").replace(/\s+/g, "_");
   if (!q) return [];
@@ -737,15 +679,14 @@ async function fetchImdbSuggestions(query) {
     const data = await r.json();
     const items = (data.d || []).filter(d => {
       const qq = (d.qid || d.q || "").toLowerCase();
-      return /movie|short|tv|video|mini|feature/i.test(qq) || d.q === "feature";
+      return /movie|short|tv|video|mini|feature|series/i.test(qq) || d.q === "feature";
     });
     return items.slice(0, 10).map(d => ({
       id: d.id,
-      qid: null,
       imdbId: d.id,
       title: d.l || "",
       year: d.y || (d.yr ? parseInt(d.yr) : null),
-      directors: "", // IMDb suggestion doesn't include directors
+      directors: "", // IMDb suggestion has no director field; will be enriched on pick
       poster: d.i && d.i.imageUrl ? d.i.imageUrl : null,
       stars: d.s || "",
       source: "imdb"
@@ -757,45 +698,20 @@ async function fetchImdbSuggestions(query) {
 }
 
 async function searchFilms(query) {
-  // Try Wikidata first (returns director in-line)
-  let results = await fetchWikidataSuggestions(query);
-  if (results.length >= 3) return { results, source: "wikidata" };
-  // Fall back to / combine with IMDb
-  const imdb = await fetchImdbSuggestions(query);
-  // Merge, prefer wikidata entries
-  const seen = new Set(results.map(r => r.imdbId || r.qid));
-  for (const it of imdb) {
-    if (!seen.has(it.imdbId)) { results.push(it); seen.add(it.imdbId); }
-  }
-  return { results: results.slice(0, 10), source: results.length ? "mixed" : "none" };
+  const results = await fetchImdbSuggestions(query);
+  return { results, source: results.length ? "imdb" : "none" };
 }
 
-async function fetchPosterFromWikidata(imdbId) {
-  if (!imdbId) return null;
-  const sparql = `SELECT ?image WHERE {
-    ?film wdt:P345 "${imdbId}" .
-    ?film wdt:P18 ?image .
-  } LIMIT 1`;
-  const url = `https://query.wikidata.org/sparql?format=json&query=${encodeURIComponent(sparql)}`;
-  try {
-    const r = await fetch(url, { headers: { "Accept": "application/sparql-results+json" } });
-    if (!r.ok) return null;
-    const data = await r.json();
-    const v = data.results?.bindings?.[0]?.image?.value;
-    if (!v) return null;
-    return v.replace(/^http:/, "https:") + "?width=160";
-  } catch (e) {
-    return null;
-  }
-}
-
+/* Wikidata SPARQL for director lookup by IMDb ID — STR() strips language tags so
+   "Rian Johnson"@en and "Rian Johnson"@it dedupe correctly. */
 async function fetchDirectorFromWikidata(imdbId) {
   if (!imdbId) return null;
-  const sparql = `SELECT (GROUP_CONCAT(DISTINCT ?dirLabel; separator=", ") AS ?directors) WHERE {
+  const sparql = `SELECT (GROUP_CONCAT(DISTINCT ?name; separator=", ") AS ?directors) WHERE {
     ?film wdt:P345 "${imdbId}" .
     ?film wdt:P57 ?dir .
-    ?dir rdfs:label ?dirLabel .
-    FILTER(LANG(?dirLabel) = "it" || LANG(?dirLabel) = "en")
+    ?dir rdfs:label ?label .
+    FILTER(LANG(?label) = "it" || LANG(?label) = "en")
+    BIND(STR(?label) AS ?name)
   }`;
   const url = `https://query.wikidata.org/sparql?format=json&query=${encodeURIComponent(sparql)}`;
   try {
@@ -803,9 +719,35 @@ async function fetchDirectorFromWikidata(imdbId) {
     if (!r.ok) return null;
     const data = await r.json();
     const v = data.results?.bindings?.[0]?.directors?.value;
-    return v || null;
+    if (!v) return null;
+    // Final defensive dedupe in JS in case wikidata returns case/whitespace variants
+    const seen = new Set();
+    return v.split(",").map(s => s.trim()).filter(s => {
+      const k = s.toLowerCase();
+      if (!s || seen.has(k)) return false;
+      seen.add(k); return true;
+    }).join(", ");
   } catch (e) {
     console.warn("Director lookup error:", e);
+    return null;
+  }
+}
+
+/* Bulk poster recovery — query IMDb suggestion by title, match by IMDb ID, return its poster. */
+async function fetchPosterByImdbId(imdbId, title) {
+  if (!imdbId || !title) return null;
+  // Search IMDb with the title and find the matching IMDb ID in the results
+  const q = title.trim().toLowerCase().replace(/[^a-z0-9\s]/gi, "").replace(/\s+/g, "_");
+  if (!q) return null;
+  const letter = q[0];
+  const url = `https://v3.sg.media-imdb.com/suggestion/${letter}/${encodeURIComponent(q)}.json`;
+  try {
+    const r = await fetch(url);
+    if (!r.ok) return null;
+    const data = await r.json();
+    const match = (data.d || []).find(d => d.id === imdbId);
+    return match?.i?.imageUrl || null;
+  } catch (e) {
     return null;
   }
 }
@@ -841,7 +783,7 @@ function App() {
   const [tab, setTab] = useState("film"); // film | serie
   const [query, setQuery] = useState("");
   const [favOnly, setFavOnly] = useState(false);
-  const [sortMode, setSortMode] = useState("recenti"); // recenti | anno | alfa
+  const [sortMode, setSortMode] = useState("anno"); // anno | alfa | recenti
   const [editOpen, setEditOpen] = useState(false);
   const [editing, setEditing] = useState(null);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -1113,10 +1055,10 @@ function App() {
     setPosterFetchProgress({ done: 0, total: missing.length, found: 0 });
 
     let done = 0, found = 0;
-    // Process sequentially with a small delay to be nice to Wikidata
+    // Process sequentially with a small delay to be nice to IMDb
     for (const item of missing) {
       try {
-        const poster = await fetchPosterFromWikidata(item.imdbId);
+        const poster = await fetchPosterByImdbId(item.imdbId, item.title);
         if (poster) {
           found++;
           setItems(prev => prev.map(p => p.id === item.id ? { ...p, poster } : p));
@@ -1124,7 +1066,7 @@ function App() {
       } catch (e) { /* continue */ }
       done++;
       setPosterFetchProgress({ done, total: missing.length, found });
-      // Throttle: ~3 req/sec
+      // Throttle ~3 req/sec
       await new Promise(r => setTimeout(r, 350));
     }
     setPosterFetchProgress(null);
@@ -1249,11 +1191,11 @@ function Tabs({ tab, setTab, filmCount, serieCount }) {
 
 function Toolbar({ query, setQuery, favOnly, setFavOnly, sortMode, setSortMode }) {
   const cycle = () => {
-    const order = ["recenti", "anno", "alfa"];
+    const order = ["anno", "alfa", "recenti"];
     const next = order[(order.indexOf(sortMode) + 1) % order.length];
     setSortMode(next);
   };
-  const labelMap = { recenti: "Recenti", anno: "Anno", alfa: "A–Z" };
+  const labelMap = { anno: "Anno", alfa: "A–Z", recenti: "Recenti" };
   return (
     <div className="toolbar">
       <div className="search-box">
