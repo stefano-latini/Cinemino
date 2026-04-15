@@ -234,32 +234,6 @@ input, textarea { -webkit-appearance: none; appearance: none; }
   transition: background .15s;
 }
 .card:hover { background: var(--bg-elev); }
-.card-avatar {
-  width: 44px; height: 56px;
-  flex-shrink: 0;
-  border-radius: 4px;
-  background: var(--avatar-bg);
-  color: var(--avatar-fg);
-  display: flex; align-items: center; justify-content: center;
-  font-family: 'Fraunces', serif;
-  font-weight: 600;
-  font-size: 22px;
-  font-style: italic;
-  box-shadow: inset 0 -20px 20px -20px rgba(255,220,150,.2);
-  position: relative;
-  overflow: hidden;
-}
-.card-avatar::after {
-  content: "";
-  position: absolute;
-  inset: 3px;
-  border: 1px solid rgba(228,200,136,.25);
-  border-radius: 2px;
-  pointer-events: none;
-}
-.card-avatar-img { background: var(--line); }
-.card-avatar-img::after { display: none; }
-.card-avatar-img img { width: 100%; height: 100%; object-fit: cover; display: block; border-radius: 4px; }
 .card-body { flex: 1; min-width: 0; }
 .card-title {
   font-weight: 600;
@@ -462,21 +436,6 @@ input, textarea { -webkit-appearance: none; appearance: none; }
 }
 .sugg-item:last-child { border-bottom: 0; }
 .sugg-item:hover, .sugg-item.highlight { background: var(--accent-bg); }
-.sugg-poster {
-  width: 30px; height: 44px;
-  border-radius: 3px;
-  background: var(--line);
-  object-fit: cover;
-  flex-shrink: 0;
-}
-.sugg-poster-fallback {
-  background: var(--avatar-bg);
-  color: var(--avatar-fg);
-  display: flex; align-items: center; justify-content: center;
-  font-family: 'Fraunces', serif;
-  font-style: italic;
-  font-size: 14px;
-}
 .sugg-body { flex: 1; min-width: 0; }
 .sugg-title {
   font-size: 14px; font-weight: 500; color: var(--ink);
@@ -556,25 +515,6 @@ input, textarea { -webkit-appearance: none; appearance: none; }
   animation: toastIn .25s;
   box-shadow: var(--shadow-lg);
   max-width: 90vw;
-}
-.poster-progress {
-  position: fixed;
-  bottom: calc(22px + var(--safe-bot));
-  left: 50%;
-  transform: translateX(-50%);
-  background: var(--ink);
-  color: var(--bg);
-  padding: 10px 18px;
-  border-radius: 999px;
-  font-size: 13.5px;
-  font-weight: 500;
-  z-index: 199;
-  box-shadow: var(--shadow-lg);
-  display: flex; align-items: center; gap: 10px;
-}
-.poster-progress .spin {
-  border-color: rgba(255,255,255,.25);
-  border-top-color: var(--bg);
 }
 @keyframes toastIn { from { opacity: 0; transform: translateX(-50%) translateY(8px); } }
 
@@ -666,8 +606,71 @@ function parseCSV(text) {
    Wikidata SPARQL gives us title+year+director+imdbId in a single CORS-enabled request.
    IMDb suggestion (unofficial) is used only as fallback if Wikidata returns nothing. */
 
-/* IMDb suggestion endpoint — keyless, CORS-enabled, returns reliable poster URLs.
-   Used as PRIMARY source. Wikidata is queried only for the director (after pick). */
+/* Wikidata SPARQL — primary source: title, year, director (deduplicated via STR()).
+   Returns no posters; the app no longer displays posters. */
+async function fetchWikidataSuggestions(query) {
+  const safe = query.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  const sparql = `SELECT ?item ?itemLabel ?year (GROUP_CONCAT(DISTINCT ?dirName; separator=", ") AS ?directors) ?imdb WHERE {
+  SERVICE wikibase:mwapi {
+    bd:serviceParam wikibase:endpoint "www.wikidata.org" .
+    bd:serviceParam wikibase:api "EntitySearch" .
+    bd:serviceParam mwapi:search "${safe}" .
+    bd:serviceParam mwapi:language "it" .
+    ?item wikibase:apiOutputItem mwapi:item .
+  }
+  ?item wdt:P31/wdt:P279* wd:Q11424 .
+  OPTIONAL { ?item wdt:P577 ?date . BIND(YEAR(?date) AS ?year) }
+  OPTIONAL {
+    ?item wdt:P57 ?dir .
+    ?dir rdfs:label ?dirLabel .
+    FILTER(LANG(?dirLabel) = "it" || LANG(?dirLabel) = "en")
+    BIND(STR(?dirLabel) AS ?dirName)
+  }
+  OPTIONAL { ?item wdt:P345 ?imdb }
+  SERVICE wikibase:label { bd:serviceParam wikibase:language "it,en" . ?item rdfs:label ?itemLabel . }
+}
+GROUP BY ?item ?itemLabel ?year ?imdb
+ORDER BY DESC(?year)
+LIMIT 12`;
+  const url = `https://query.wikidata.org/sparql?format=json&query=${encodeURIComponent(sparql)}`;
+  try {
+    const r = await fetch(url, { headers: { "Accept": "application/sparql-results+json" } });
+    if (!r.ok) return [];
+    const data = await r.json();
+    const seen = new Set();
+    const out = [];
+    for (const b of data.results?.bindings || []) {
+      const qid = (b.item?.value || "").split("/").pop();
+      if (!qid || seen.has(qid)) continue;
+      seen.add(qid);
+      // Defensive JS dedupe for directors (in case GROUP_CONCAT didn't catch case variants)
+      let directors = b.directors?.value || "";
+      if (directors) {
+        const dseen = new Set();
+        directors = directors.split(",").map(s => s.trim()).filter(s => {
+          const k = s.toLowerCase();
+          if (!s || dseen.has(k)) return false;
+          dseen.add(k); return true;
+        }).join(", ");
+      }
+      out.push({
+        id: b.imdb?.value || qid,
+        imdbId: b.imdb?.value || "",
+        qid,
+        title: b.itemLabel?.value || "",
+        year: b.year?.value ? parseInt(b.year.value) : null,
+        directors,
+        source: "wikidata"
+      });
+    }
+    return out.slice(0, 10);
+  } catch (e) {
+    console.warn("Wikidata error:", e);
+    return [];
+  }
+}
+
+/* IMDb suggestion — fallback only when Wikidata returns nothing. */
 async function fetchImdbSuggestions(query) {
   const q = query.trim().toLowerCase().replace(/[^a-z0-9\s]/gi, "").replace(/\s+/g, "_");
   if (!q) return [];
@@ -675,7 +678,7 @@ async function fetchImdbSuggestions(query) {
   const url = `https://v3.sg.media-imdb.com/suggestion/${letter}/${encodeURIComponent(q)}.json`;
   try {
     const r = await fetch(url);
-    if (!r.ok) { console.warn("IMDb status", r.status); return []; }
+    if (!r.ok) return [];
     const data = await r.json();
     const items = (data.d || []).filter(d => {
       const qq = (d.qid || d.q || "").toLowerCase();
@@ -684,26 +687,35 @@ async function fetchImdbSuggestions(query) {
     return items.slice(0, 10).map(d => ({
       id: d.id,
       imdbId: d.id,
+      qid: null,
       title: d.l || "",
       year: d.y || (d.yr ? parseInt(d.yr) : null),
-      directors: "", // IMDb suggestion has no director field; will be enriched on pick
-      poster: d.i && d.i.imageUrl ? d.i.imageUrl : null,
+      directors: "",
       stars: d.s || "",
       source: "imdb"
     }));
   } catch (e) {
-    console.warn("IMDb error:", e);
     return [];
   }
 }
 
 async function searchFilms(query) {
-  const results = await fetchImdbSuggestions(query);
-  return { results, source: results.length ? "imdb" : "none" };
+  const wd = await fetchWikidataSuggestions(query);
+  if (wd.length >= 3) return { results: wd, source: "wikidata" };
+  const imdb = await fetchImdbSuggestions(query);
+  // Merge wikidata + imdb (wikidata first)
+  const seen = new Set(wd.map(r => r.imdbId).filter(Boolean));
+  const merged = [...wd];
+  for (const it of imdb) {
+    if (!it.imdbId || !seen.has(it.imdbId)) {
+      merged.push(it);
+      if (it.imdbId) seen.add(it.imdbId);
+    }
+  }
+  return { results: merged.slice(0, 10), source: merged.length ? "mixed" : "none" };
 }
 
-/* Wikidata SPARQL for director lookup by IMDb ID — STR() strips language tags so
-   "Rian Johnson"@en and "Rian Johnson"@it dedupe correctly. */
+/* Wikidata SPARQL for director lookup by IMDb ID (used when IMDb fallback was picked). */
 async function fetchDirectorFromWikidata(imdbId) {
   if (!imdbId) return null;
   const sparql = `SELECT (GROUP_CONCAT(DISTINCT ?name; separator=", ") AS ?directors) WHERE {
@@ -720,33 +732,12 @@ async function fetchDirectorFromWikidata(imdbId) {
     const data = await r.json();
     const v = data.results?.bindings?.[0]?.directors?.value;
     if (!v) return null;
-    // Final defensive dedupe in JS in case wikidata returns case/whitespace variants
     const seen = new Set();
     return v.split(",").map(s => s.trim()).filter(s => {
       const k = s.toLowerCase();
       if (!s || seen.has(k)) return false;
       seen.add(k); return true;
     }).join(", ");
-  } catch (e) {
-    console.warn("Director lookup error:", e);
-    return null;
-  }
-}
-
-/* Bulk poster recovery — query IMDb suggestion by title, match by IMDb ID, return its poster. */
-async function fetchPosterByImdbId(imdbId, title) {
-  if (!imdbId || !title) return null;
-  // Search IMDb with the title and find the matching IMDb ID in the results
-  const q = title.trim().toLowerCase().replace(/[^a-z0-9\s]/gi, "").replace(/\s+/g, "_");
-  if (!q) return null;
-  const letter = q[0];
-  const url = `https://v3.sg.media-imdb.com/suggestion/${letter}/${encodeURIComponent(q)}.json`;
-  try {
-    const r = await fetch(url);
-    if (!r.ok) return null;
-    const data = await r.json();
-    const match = (data.d || []).find(d => d.id === imdbId);
-    return match?.i?.imageUrl || null;
   } catch (e) {
     return null;
   }
@@ -958,7 +949,6 @@ function App() {
               id: it.id || imdbId || uid(),
               imdbId,
               qid: it.qid || "",
-              poster: it.poster || "",
               title: it.title || "",
               originalTitle: it.originalTitle || it.original_title || "",
               year: it.year ? parseInt(it.year) : null,
@@ -1006,7 +996,6 @@ function App() {
             toAdd.push({
               id: imdbId || uid(),
               imdbId,
-              poster: "",
               title: row[titleIdx] || "",
               originalTitle: origIdx >= 0 ? row[origIdx] : "",
               year: yearIdx >= 0 && row[yearIdx] ? parseInt(row[yearIdx]) : null,
@@ -1039,38 +1028,6 @@ function App() {
     downloadBlob(json, "cinemino.json", "application/json;charset=utf-8");
     setMenuOpen(false);
     showToast("JSON esportato");
-  };
-
-  const [posterFetchProgress, setPosterFetchProgress] = useState(null);
-
-  const fetchMissingPosters = async () => {
-    const missing = items.filter(i => !i.poster && i.imdbId);
-    if (missing.length === 0) {
-      setMenuOpen(false);
-      showToast("Tutte le copertine già presenti");
-      return;
-    }
-    if (!confirm(`Recuperare le copertine per ${missing.length} titoli? L'operazione richiede qualche minuto e fa una chiamata a Wikidata per ogni titolo. Puoi continuare a usare l'app durante il recupero.`)) return;
-    setMenuOpen(false);
-    setPosterFetchProgress({ done: 0, total: missing.length, found: 0 });
-
-    let done = 0, found = 0;
-    // Process sequentially with a small delay to be nice to IMDb
-    for (const item of missing) {
-      try {
-        const poster = await fetchPosterByImdbId(item.imdbId, item.title);
-        if (poster) {
-          found++;
-          setItems(prev => prev.map(p => p.id === item.id ? { ...p, poster } : p));
-        }
-      } catch (e) { /* continue */ }
-      done++;
-      setPosterFetchProgress({ done, total: missing.length, found });
-      // Throttle ~3 req/sec
-      await new Promise(r => setTimeout(r, 350));
-    }
-    setPosterFetchProgress(null);
-    showToast(`Recupero completato: ${found} copertine trovate su ${missing.length}`);
   };
 
   const resetAll = () => {
@@ -1124,16 +1081,8 @@ function App() {
           onImport={() => fileInputRef.current?.click()}
           onStats={() => { setMenuOpen(false); setStatsOpen(true); }}
           onReset={resetAll}
-          onFetchPosters={fetchMissingPosters}
           total={items.length}
         />
-      )}
-
-      {posterFetchProgress && (
-        <div className="poster-progress">
-          <span className="spin"></span>
-          <span>Recupero copertine: {posterFetchProgress.done}/{posterFetchProgress.total}</span>
-        </div>
       )}
 
       {statsOpen && <StatsSheet items={items} onClose={() => setStatsOpen(false)} />}
@@ -1226,22 +1175,9 @@ function Toolbar({ query, setQuery, favOnly, setFavOnly, sortMode, setSortMode }
   );
 }
 
-function CardAvatar({ item }) {
-  const [failed, setFailed] = useState(false);
-  if (item.poster && !failed) {
-    return (
-      <div className="card-avatar card-avatar-img">
-        <img src={item.poster} alt="" referrerPolicy="no-referrer" onError={() => setFailed(true)} />
-      </div>
-    );
-  }
-  return <div className="card-avatar">{firstLetter(item.title)}</div>;
-}
-
 function ItemCard({ item, onClick, onFav }) {
   return (
     <div className="card" onClick={onClick}>
-      <CardAvatar item={item} />
       <div className="card-body">
         <div className="card-title">{item.title}</div>
         {(item.year || item.directors) && (
@@ -1263,22 +1199,6 @@ function ItemCard({ item, onClick, onFav }) {
   );
 }
 
-function SuggestionPoster({ src, title }) {
-  const [failed, setFailed] = useState(false);
-  if (!src || failed) {
-    return <div className="sugg-poster sugg-poster-fallback">{firstLetter(title)}</div>;
-  }
-  return (
-    <img
-      src={src}
-      className="sugg-poster"
-      alt=""
-      referrerPolicy="no-referrer"
-      onError={() => setFailed(true)}
-    />
-  );
-}
-
 /* ========== EDIT SHEET ========== */
 function EditSheet({ initial, defaultIsSerie, onClose, onSave, onDelete }) {
   const [title, setTitle] = useState(initial?.title || "");
@@ -1288,7 +1208,6 @@ function EditSheet({ initial, defaultIsSerie, onClose, onSave, onDelete }) {
   const [favorite, setFavorite] = useState(initial?.favorite || false);
   const [isSerie, setIsSerie] = useState(initial ? /serie|mini/i.test(initial.type || "") : !!defaultIsSerie);
   const [imdbId, setImdbId] = useState(initial?.imdbId || "");
-  const [poster, setPoster] = useState(initial?.poster || "");
   const [qid, setQid] = useState(initial?.qid || "");
   const [liveEnabled, setLiveEnabled] = useState(!initial);
   const [suggestions, setSuggestions] = useState([]);
@@ -1330,7 +1249,6 @@ function EditSheet({ initial, defaultIsSerie, onClose, onSave, onDelete }) {
     if (s.year) setYear(s.year);
     if (s.imdbId) setImdbId(s.imdbId);
     if (s.qid) setQid(s.qid);
-    if (s.poster) setPoster(s.poster);
     setShowSug(false);
     setSuggestions([]);
     setLiveEnabled(false);
@@ -1393,7 +1311,6 @@ function EditSheet({ initial, defaultIsSerie, onClose, onSave, onDelete }) {
       id: initial?.id,
       imdbId: imdbId || initial?.imdbId || "",
       qid: qid || initial?.qid || "",
-      poster: poster || initial?.poster || "",
       title: title.trim(),
       originalTitle: originalTitle.trim(),
       year: year ? parseInt(year) : null,
@@ -1462,7 +1379,6 @@ function EditSheet({ initial, defaultIsSerie, onClose, onSave, onDelete }) {
                   )}
                   {!loadingSug && !searchError && suggestions.map(s => (
                     <div key={s.id + (s.qid||"")} className="sugg-item" onClick={() => onPickSuggestion(s)}>
-                      <SuggestionPoster src={s.poster} title={s.title} />
                       <div className="sugg-body">
                         <div className="sugg-title">{s.title}</div>
                         <div className="sugg-meta">
@@ -1566,7 +1482,7 @@ function EditSheet({ initial, defaultIsSerie, onClose, onSave, onDelete }) {
 }
 
 /* ========== MENU SHEET ========== */
-function MenuSheet({ onClose, onExportCSV, onExportPDF, onExportJSON, onImport, onStats, onReset, onFetchPosters, total }) {
+function MenuSheet({ onClose, onExportCSV, onExportPDF, onExportJSON, onImport, onStats, onReset, total }) {
   return (
     <>
       <div className="backdrop" onClick={onClose} />
@@ -1611,13 +1527,6 @@ function MenuSheet({ onClose, onExportCSV, onExportPDF, onExportJSON, onImport, 
             <div style={{flex:1}}>
               <div>Esporta PDF</div>
               <div className="menu-item-sub">Elenco stampabile</div>
-            </div>
-          </button>
-          <button className="menu-item" onClick={onFetchPosters}>
-            <Icon.Sparkle />
-            <div style={{flex:1}}>
-              <div>Recupera copertine mancanti</div>
-              <div className="menu-item-sub">Cerca su Wikidata per i titoli importati</div>
             </div>
           </button>
           <button className="menu-item menu-item-danger" onClick={onReset}>
