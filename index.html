@@ -175,7 +175,7 @@ input, textarea { -webkit-appearance: none; appearance: none; }
   font-variant-numeric: tabular-nums;
 }
 .tab.active { color: var(--ink); border-bottom-color: var(--accent); }
-.tab.active .tab-count { background: var(--accent); color: #fff; }
+.tab.active .tab-count { background: var(--accent); color: var(--bg); }
 
 /* ---------- Search / Filters ---------- */
 .toolbar {
@@ -284,23 +284,6 @@ input, textarea { -webkit-appearance: none; appearance: none; }
   color: var(--ink-soft);
   margin-bottom: 6px;
 }
-
-/* ---------- FAB ---------- */
-.fab {
-  position: fixed;
-  right: max(18px, calc((100vw - 560px) / 2 + 18px));
-  bottom: calc(22px + var(--safe-bot));
-  width: 56px; height: 56px;
-  border-radius: 999px;
-  background: var(--accent);
-  color: #fff;
-  display: inline-flex; align-items: center; justify-content: center;
-  box-shadow: 0 8px 24px rgba(139,26,26,.36), 0 2px 6px rgba(26,20,16,.14);
-  z-index: 20;
-  transition: transform .15s;
-}
-.fab:active { transform: scale(.92); }
-.fab svg { width: 24px; height: 24px; }
 
 /* ---------- Sheet / Modal ---------- */
 .backdrop {
@@ -503,13 +486,13 @@ input, textarea { -webkit-appearance: none; appearance: none; }
   outline: none;
   transition: border-color .15s;
 }
-.input:focus { border-color: var(--accent-soft); background: #fff; }
+.input:focus { border-color: var(--accent-soft); background: var(--bg-elev); }
 .input-with-btn { display: flex; gap: 8px; position: relative; }
 .input-with-btn .input { flex: 1; }
 .search-btn {
   padding: 0 14px;
   background: var(--ink);
-  color: #fff;
+  color: var(--bg);
   border-radius: var(--r);
   font-size: 13px;
   font-weight: 600;
@@ -531,7 +514,7 @@ input, textarea { -webkit-appearance: none; appearance: none; }
   display: inline-flex; align-items: center; justify-content: center; gap: 6px;
   transition: all .15s;
 }
-.btn-primary { background: var(--accent); color: #fff; flex: 1; }
+.btn-primary { background: var(--accent); color: var(--bg); flex: 1; }
 .btn-primary:disabled { background: var(--muted); opacity: .7; }
 .btn-secondary { background: var(--bg-elev); color: var(--ink); border: 1px solid var(--line); }
 .btn-danger-ghost { color: var(--accent); background: transparent; }
@@ -541,7 +524,7 @@ input, textarea { -webkit-appearance: none; appearance: none; }
   position: absolute;
   left: 0; right: 62px;
   top: calc(100% + 4px);
-  background: #fff;
+  background: var(--bg-elev);
   border: 1px solid var(--line);
   border-radius: var(--r);
   box-shadow: var(--shadow-lg);
@@ -682,23 +665,18 @@ function loadItems() {
     if (!raw) return null;
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return null;
-    // Migration: repair items missing a valid id (legacy bug where new items
-    // were saved with id: undefined). Assign a fresh uid so they become
-    // independently addressable.
-    let needsRepair = false;
+    // Migration: repair items missing a valid id or with duplicate ids
+    // (legacy bug where new items were saved with id: undefined).
     const seen = new Set();
-    const fixed = parsed.map(it => {
-      if (!it || typeof it !== "object") return it;
+    return parsed.filter(it => it && typeof it === "object" && it.title).map(it => {
       if (!it.id || seen.has(it.id)) {
-        needsRepair = true;
-        const newId = "l-" + Math.random().toString(36).slice(2,10) + Date.now().toString(36).slice(-4) + "-" + Math.floor(Math.random()*1000);
+        const newId = uid();
         seen.add(newId);
         return { ...it, id: newId };
       }
       seen.add(it.id);
       return it;
     });
-    return fixed;
   } catch (e) { /* ignore */ }
   return null;
 }
@@ -708,7 +686,8 @@ function saveItems(items) {
 }
 
 /* ================== UTIL ================== */
-const uid = () => "l-" + Math.random().toString(36).slice(2,10) + Date.now().toString(36).slice(-4);
+let __uidCounter = 0;
+const uid = () => "l-" + Date.now().toString(36) + "-" + (++__uidCounter).toString(36) + "-" + Math.random().toString(36).slice(2,8);
 const norm = (s) => (s||"").toString().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"");
 const firstLetter = (s) => {
   const t = (s||"").trim();
@@ -740,7 +719,12 @@ function parseCSV(text) {
       else field += ch;
     }
   }
-  if (field.length || row.length) { row.push(field); rows.push(row); }
+  // Push last row only if it has actual content (avoid trailing empty row)
+  if (field.length || row.length > 0) {
+    row.push(field);
+    // Don't push if it's a single empty cell (artifact of trailing newline)
+    if (!(row.length === 1 && row[0] === "")) rows.push(row);
+  }
   return rows;
 }
 
@@ -800,7 +784,7 @@ LIMIT 12`;
         imdbId: b.imdb?.value || "",
         qid,
         title: b.itemLabel?.value || "",
-        year: b.year?.value ? parseInt(b.year.value) : null,
+        year: b.year?.value ? parseInt(b.year.value, 10) : null,
         directors,
         source: "wikidata"
       });
@@ -831,7 +815,7 @@ async function fetchImdbSuggestions(query) {
       imdbId: d.id,
       qid: null,
       title: d.l || "",
-      year: d.y || (d.yr ? parseInt(d.yr) : null),
+      year: d.y || (d.yr ? parseInt(d.yr, 10) : null),
       directors: "",
       stars: d.s || "",
       source: "imdb"
@@ -1068,7 +1052,7 @@ function App() {
       doc.setTextColor(30);
       for (const it of sec.data) {
         if (y > h - margin - 20) { doc.addPage(); y = margin; }
-        const prefix = it.favorite ? "♥ " : "   ";
+        const prefix = it.favorite ? "* " : "  ";
         doc.setFont("helvetica","bold"); doc.setFontSize(10);
         const titleLine = `${prefix}${it.title}${it.year?" ("+it.year+")":""}`;
         const titleLines = doc.splitTextToSize(titleLine, w - 2*margin);
@@ -1107,28 +1091,33 @@ function App() {
           const arr = Array.isArray(parsed) ? parsed : (Array.isArray(parsed.items) ? parsed.items : null);
           if (!arr) throw new Error("formato JSON non riconosciuto");
           let imported = 0, skipped = 0;
-          const existing = new Set(items.map(i => i.imdbId).filter(Boolean));
+          const existingImdb = new Set(items.map(i => i.imdbId).filter(Boolean));
+          const existingIds = new Set(items.map(i => i.id).filter(Boolean));
           const toAdd = [];
           for (const it of arr) {
             if (!it || !it.title) continue;
             const imdbId = it.imdbId || it.imdb_id || it.imdb || "";
-            if (imdbId && existing.has(imdbId)) { skipped++; continue; }
+            if (imdbId && existingImdb.has(imdbId)) { skipped++; continue; }
+            // Pick an id; if it collides with anything already known, mint a new one
+            let id = it.id || imdbId || uid();
+            if (existingIds.has(id)) id = uid();
+            existingIds.add(id);
             toAdd.push({
-              id: it.id || imdbId || uid(),
+              id,
               imdbId,
               qid: it.qid || "",
               title: it.title || "",
               originalTitle: it.originalTitle || it.original_title || "",
-              year: it.year ? parseInt(it.year) : null,
+              year: it.year ? parseInt(it.year, 10) : null,
               directors: it.directors || it.director || "",
               genres: it.genres || "",
-              runtime: it.runtime ? parseInt(it.runtime) : null,
+              runtime: it.runtime ? parseInt(it.runtime, 10) : null,
               imdbRating: it.imdbRating ? parseFloat(it.imdbRating) : null,
               createdAt: it.createdAt || new Date().toISOString().slice(0,10),
               type: it.type || "Film",
               favorite: !!it.favorite,
             });
-            if (imdbId) existing.add(imdbId);
+            if (imdbId) existingImdb.add(imdbId);
             imported++;
           }
           setItems(prev => [...toAdd, ...prev]);
@@ -1154,28 +1143,32 @@ function App() {
           if (titleIdx < 0) throw new Error("colonna Title mancante");
 
           let imported = 0, skipped = 0;
-          const existing = new Set(items.map(i => i.imdbId).filter(Boolean));
+          const existingImdb = new Set(items.map(i => i.imdbId).filter(Boolean));
+          const existingIds = new Set(items.map(i => i.id).filter(Boolean));
           const toAdd = [];
           for (let r = 1; r < rows.length; r++) {
             const row = rows[r];
             if (!row || !row[titleIdx]) continue;
             const imdbId = imdbIdx >= 0 ? row[imdbIdx] : "";
-            if (imdbId && existing.has(imdbId)) { skipped++; continue; }
+            if (imdbId && existingImdb.has(imdbId)) { skipped++; continue; }
+            let id = imdbId || uid();
+            if (existingIds.has(id)) id = uid();
+            existingIds.add(id);
             toAdd.push({
-              id: imdbId || uid(),
+              id,
               imdbId,
               title: row[titleIdx] || "",
               originalTitle: origIdx >= 0 ? row[origIdx] : "",
-              year: yearIdx >= 0 && row[yearIdx] ? parseInt(row[yearIdx]) : null,
+              year: yearIdx >= 0 && row[yearIdx] ? parseInt(row[yearIdx], 10) : null,
               directors: dirIdx >= 0 ? row[dirIdx] : "",
               genres: genIdx >= 0 ? row[genIdx] : "",
-              runtime: runIdx >= 0 && row[runIdx] ? parseInt(row[runIdx]) : null,
+              runtime: runIdx >= 0 && row[runIdx] ? parseInt(row[runIdx], 10) : null,
               imdbRating: ratingIdx >= 0 && row[ratingIdx] ? parseFloat(row[ratingIdx]) : null,
               createdAt: createdIdx >= 0 ? row[createdIdx] : new Date().toISOString().slice(0,10),
               type: typeIdx >= 0 ? row[typeIdx] : "Film",
               favorite: favIdx >= 0 ? /^(si|sì|yes|true|1)$/i.test(row[favIdx] || "") : false,
             });
-            if (imdbId) existing.add(imdbId);
+            if (imdbId) existingImdb.add(imdbId);
             imported++;
           }
           setItems(prev => [...toAdd, ...prev]);
@@ -1517,9 +1510,11 @@ function EditSheet({ initial, defaultIsSerie, onClose, onSave, onDelete }) {
       setDirectors(s.directors);
     } else if (s.imdbId) {
       setFetchingDir(true);
-      const dir = await fetchDirectorFromWikidata(s.imdbId);
-      setFetchingDir(false);
-      if (dir) setDirectors(dir);
+      try {
+        const dir = await fetchDirectorFromWikidata(s.imdbId);
+        if (dir) setDirectors(dir);
+      } catch (e) { /* ignore — user can still edit by hand */ }
+      finally { setFetchingDir(false); }
     }
   };
 
@@ -1573,7 +1568,7 @@ function EditSheet({ initial, defaultIsSerie, onClose, onSave, onDelete }) {
       qid: qid || initial?.qid || "",
       title: title.trim(),
       originalTitle: originalTitle.trim(),
-      year: year ? parseInt(year) : null,
+      year: year ? parseInt(year, 10) : null,
       directors: isSerie ? "" : directors.trim(),
       favorite,
       isSerie,
@@ -1637,8 +1632,8 @@ function EditSheet({ initial, defaultIsSerie, onClose, onSave, onDelete }) {
                 {!loadingSug && searchError && (
                   <div className="sugg-empty">{searchError}</div>
                 )}
-                {!loadingSug && !searchError && suggestions.map(s => (
-                  <div key={s.id + (s.qid||"")} className="sugg-item" onClick={() => onPickSuggestion(s)}>
+                {!loadingSug && !searchError && suggestions.map((s, idx) => (
+                  <div key={`${s.id||"x"}-${s.qid||"x"}-${idx}`} className="sugg-item" onClick={() => onPickSuggestion(s)}>
                     <div className="sugg-body">
                       <div className="sugg-title">{s.title}</div>
                       <div className="sugg-meta">
