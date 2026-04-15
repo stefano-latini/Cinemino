@@ -407,6 +407,81 @@ input, textarea { -webkit-appearance: none; appearance: none; }
 .page-header-btn.primary { color: var(--accent); font-weight: 600; text-align: right; }
 .page-header-btn:disabled { opacity: .4; }
 
+/* Detail view */
+.detail-body { padding: 0; }
+.detail-hero {
+  padding: 28px 22px 18px;
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  border-bottom: 1px solid var(--line);
+}
+.detail-hero-text { flex: 1; min-width: 0; }
+.detail-title {
+  font-family: 'Fraunces', serif;
+  font-weight: 700;
+  font-size: 32px;
+  line-height: 1.05;
+  letter-spacing: -0.015em;
+  margin: 0 0 6px 0;
+  color: var(--ink);
+  font-variation-settings: "opsz" 96, "SOFT" 30;
+  word-wrap: break-word;
+}
+.detail-orig {
+  font-family: 'Fraunces', serif;
+  font-style: italic;
+  font-size: 16px;
+  color: var(--muted);
+  line-height: 1.3;
+}
+.detail-fav {
+  flex-shrink: 0;
+  width: 44px; height: 44px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 999px;
+  color: var(--muted);
+  transition: background .15s, color .15s;
+  margin-top: 4px;
+}
+.detail-fav:hover, .detail-fav:active { background: var(--line); }
+.detail-fav.on { color: var(--heart); }
+.detail-fav svg { width: 24px; height: 24px; }
+
+.detail-rows {
+  padding: 6px 22px;
+}
+.detail-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 16px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--line);
+}
+.detail-row:last-child { border-bottom: 0; }
+.detail-row-label {
+  font-size: 13px;
+  color: var(--muted);
+  font-weight: 500;
+  flex-shrink: 0;
+}
+.detail-row-value {
+  font-size: 15px;
+  color: var(--ink);
+  text-align: right;
+  word-wrap: break-word;
+  min-width: 0;
+}
+.detail-foot {
+  text-align: center;
+  padding: 22px 22px 8px;
+  font-size: 12.5px;
+  color: var(--muted);
+  font-style: italic;
+  font-family: 'Fraunces', serif;
+}
+
 /* ---------- Form ---------- */
 .field { margin-bottom: 16px; }
 .field label {
@@ -844,6 +919,7 @@ function App() {
   const [sortMode, setSortMode] = useState("anno"); // anno | alfa | recenti
   const [editOpen, setEditOpen] = useState(false);
   const [editing, setEditing] = useState(null);
+  const [detailItem, setDetailItem] = useState(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [statsOpen, setStatsOpen] = useState(false);
   const [toast, setToast] = useState(null);
@@ -886,12 +962,19 @@ function App() {
   }, [tab, films, series, query, favOnly, sortMode]);
 
   const openAdd = () => { setEditing(null); setEditOpen(true); };
-  const openEdit = (item) => { setEditing(item); setEditOpen(true); };
+  const openDetail = (item) => { setDetailItem(item); };
+  const closeDetail = () => { setDetailItem(null); };
+  const openEditFromDetail = () => {
+    setEditing(detailItem);
+    setEditOpen(true);
+  };
   const closeEdit = () => { setEditOpen(false); setEditing(null); };
 
   const saveItem = (data) => {
     if (data.id) {
       setItems(prev => prev.map(i => i.id === data.id ? { ...i, ...data, id: i.id } : i));
+      // If we were editing from a detail view, refresh that view with the new data
+      setDetailItem(prev => prev && prev.id === data.id ? { ...prev, ...data, id: prev.id } : prev);
       showToast("Modifiche salvate");
     } else {
       // Duplicate guard for newly added items (only when imdbId present)
@@ -923,7 +1006,14 @@ function App() {
     if (!id) { closeEdit(); return; } // safety: never bulk-delete items with no id
     setItems(prev => prev.filter(i => i.id !== id));
     closeEdit();
+    closeDetail();
     showToast("Eliminato");
+  };
+
+  const toggleFavInDetail = () => {
+    if (!detailItem) return;
+    setItems(prev => prev.map(i => i.id === detailItem.id ? { ...i, favorite: !i.favorite } : i));
+    setDetailItem(prev => prev ? { ...prev, favorite: !prev.favorite } : prev);
   };
 
   const toggleFav = (id) => {
@@ -1135,9 +1225,19 @@ function App() {
       ) : (
         <div className="list">
           {visible.map(it => (
-            <ItemCard key={it.id} item={it} onClick={() => openEdit(it)} onFav={() => toggleFav(it.id)} />
+            <ItemCard key={it.id} item={it} onClick={() => openDetail(it)} onFav={() => toggleFav(it.id)} />
           ))}
         </div>
+      )}
+
+      {detailItem && !editOpen && (
+        <DetailView
+          item={detailItem}
+          onClose={closeDetail}
+          onEdit={openEditFromDetail}
+          onToggleFav={toggleFavInDetail}
+          onDelete={() => deleteItem(detailItem.id)}
+        />
       )}
 
       {editOpen && (
@@ -1273,6 +1373,88 @@ function ItemCard({ item, onClick, onFav }) {
       >
         <Icon.Heart filled={item.favorite} />
       </button>
+    </div>
+  );
+}
+
+/* ========== DETAIL VIEW ========== */
+function DetailView({ item, onClose, onEdit, onToggleFav, onDelete }) {
+  const itIsSerie = isSerie(item);
+  const fmtDate = (s) => {
+    if (!s) return null;
+    try {
+      const d = new Date(s);
+      if (isNaN(d.getTime())) return null;
+      return d.toLocaleDateString("it-IT", { day: "numeric", month: "long", year: "numeric" });
+    } catch (e) { return null; }
+  };
+  const addedOn = fmtDate(item.createdAt);
+
+  return (
+    <div className="page">
+      <div className="page-header">
+        <button className="page-header-btn" onClick={onClose}>← Indietro</button>
+        <div className="page-title">Dettaglio</div>
+        <button className="page-header-btn primary" onClick={onEdit}>Modifica</button>
+      </div>
+      <div className="page-body detail-body">
+        <div className="detail-hero">
+          <div className="detail-hero-text">
+            <h1 className="detail-title">{item.title}</h1>
+            {item.originalTitle && item.originalTitle !== item.title && (
+              <div className="detail-orig">{item.originalTitle}</div>
+            )}
+          </div>
+          <button
+            className={`detail-fav ${item.favorite?"on":""}`}
+            onClick={onToggleFav}
+            aria-label="Preferito"
+          >
+            <Icon.Heart filled={item.favorite} />
+          </button>
+        </div>
+
+        <div className="detail-rows">
+          <div className="detail-row">
+            <span className="detail-row-label">Tipologia</span>
+            <span className="detail-row-value">{itIsSerie ? "Serie TV" : "Film"}</span>
+          </div>
+          {item.year && (
+            <div className="detail-row">
+              <span className="detail-row-label">{itIsSerie ? "Anno di esordio" : "Anno di uscita"}</span>
+              <span className="detail-row-value">{item.year}</span>
+            </div>
+          )}
+          {!itIsSerie && item.directors && (
+            <div className="detail-row">
+              <span className="detail-row-label">Regia</span>
+              <span className="detail-row-value">{item.directors}</span>
+            </div>
+          )}
+          {item.genres && (
+            <div className="detail-row">
+              <span className="detail-row-label">Generi</span>
+              <span className="detail-row-value">{item.genres}</span>
+            </div>
+          )}
+          {item.runtime && (
+            <div className="detail-row">
+              <span className="detail-row-label">Durata</span>
+              <span className="detail-row-value">{item.runtime} min</span>
+            </div>
+          )}
+          {item.imdbRating && (
+            <div className="detail-row">
+              <span className="detail-row-label">IMDb</span>
+              <span className="detail-row-value">{item.imdbRating.toFixed(1)}</span>
+            </div>
+          )}
+        </div>
+
+        {addedOn && (
+          <div className="detail-foot">aggiunto il {addedOn}</div>
+        )}
+      </div>
     </div>
   );
 }
