@@ -131,14 +131,6 @@ input, textarea { -webkit-appearance: none; appearance: none; }
   align-items: center;
   gap: 4px;
 }
-.icon-btn-primary {
-  background: var(--accent);
-  color: var(--bg);
-}
-.icon-btn-primary:hover, .icon-btn-primary:active {
-  background: var(--accent-soft);
-}
-.icon-btn-primary svg { width: 22px; height: 22px; }
 .icon-btn {
   width: 40px; height: 40px;
   border-radius: 999px;
@@ -148,6 +140,13 @@ input, textarea { -webkit-appearance: none; appearance: none; }
 }
 .icon-btn:hover, .icon-btn:active { background: var(--line); }
 .icon-btn svg { width: 20px; height: 20px; }
+.icon-btn.icon-btn-primary {
+  background: var(--accent);
+  color: var(--bg);
+}
+.icon-btn.icon-btn-primary:hover,
+.icon-btn.icon-btn-primary:active { background: var(--accent-soft); }
+.icon-btn.icon-btn-primary svg { width: 22px; height: 22px; color: var(--bg); stroke: var(--bg); }
 
 /* ---------- Tabs ---------- */
 .tabs {
@@ -358,6 +357,55 @@ input, textarea { -webkit-appearance: none; appearance: none; }
   flex-shrink: 0;
   background: var(--bg);
 }
+
+/* ---------- Full-screen page (used for EditView) ---------- */
+.page {
+  position: fixed; inset: 0;
+  background: var(--bg);
+  z-index: 110;
+  display: flex; flex-direction: column;
+  max-width: 560px;
+  margin: 0 auto;
+  padding-top: var(--safe-top);
+  padding-bottom: var(--safe-bot);
+  animation: pageSlideIn .22s cubic-bezier(.2,.7,.2,1);
+}
+@keyframes pageSlideIn { from { transform: translateX(8%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+.page-header {
+  padding: 10px 12px;
+  display: flex; align-items: center; justify-content: space-between;
+  border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
+  background: var(--bg);
+}
+.page-title {
+  font-family: 'Fraunces', serif;
+  font-style: italic;
+  font-size: 22px;
+  font-weight: 600;
+  flex: 1;
+  text-align: center;
+  margin: 0 8px;
+}
+.page-body { padding: 18px 18px 20px; overflow-y: auto; flex: 1; -webkit-overflow-scrolling: touch; }
+.page-footer {
+  padding: 12px 18px calc(16px + var(--safe-bot));
+  border-top: 1px solid var(--line);
+  display: flex; gap: 10px;
+  flex-shrink: 0;
+  background: var(--bg);
+}
+.page-header-btn {
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--ink);
+  padding: 8px 4px;
+  background: none;
+  min-width: 64px;
+  text-align: left;
+}
+.page-header-btn.primary { color: var(--accent); font-weight: 600; text-align: right; }
+.page-header-btn:disabled { opacity: .4; }
 
 /* ---------- Form ---------- */
 .field { margin-bottom: 16px; }
@@ -1355,91 +1403,104 @@ function EditSheet({ initial, defaultIsSerie, onClose, onSave, onDelete }) {
   };
 
   return (
-    <>
-      <div className="backdrop" onClick={onClose} />
-      <div className="sheet" onClick={e => e.stopPropagation()}>
-        <div className="sheet-handle" />
-        <div className="sheet-header">
-          <div className="sheet-title">{initial ? "Modifica" : (isSerie ? "Nuova serie" : "Nuovo film")}</div>
-          <button className="icon-btn" onClick={onClose}><Icon.Close /></button>
-        </div>
-        <div className="sheet-body">
-          <div className="field">
-            <label>Tipologia</label>
-            <div style={{display:"flex", gap:8}}>
-              <button
-                type="button"
-                className={`chip-btn ${!isSerie?"active":""}`}
-                style={{flex:1, justifyContent:"center", padding:"11px"}}
-                onClick={() => setIsSerie(false)}
-              >Film</button>
-              <button
-                type="button"
-                className={`chip-btn ${isSerie?"active":""}`}
-                style={{flex:1, justifyContent:"center", padding:"11px"}}
-                onClick={() => setIsSerie(true)}
-              >Serie TV</button>
-            </div>
+    <div className="page" onClick={e => e.stopPropagation()}>
+      <div className="page-header">
+        <button className="page-header-btn" onClick={onClose}>Annulla</button>
+        <div className="page-title">{initial ? "Modifica" : (isSerie ? "Nuova serie" : "Nuovo film")}</div>
+        <button className="page-header-btn primary" onClick={submit} disabled={!canSave}>
+          {initial ? "Salva" : "Aggiungi"}
+        </button>
+      </div>
+      <div className="page-body">
+        <div className="field">
+          <label>Tipologia</label>
+          <div style={{display:"flex", gap:8}}>
+            <button
+              type="button"
+              className={`chip-btn ${!isSerie?"active":""}`}
+              style={{flex:1, justifyContent:"center", padding:"11px"}}
+              onClick={() => setIsSerie(false)}
+            >Film</button>
+            <button
+              type="button"
+              className={`chip-btn ${isSerie?"active":""}`}
+              style={{flex:1, justifyContent:"center", padding:"11px"}}
+              onClick={() => setIsSerie(true)}
+            >Serie TV</button>
           </div>
+        </div>
 
-          <div className="field">
-            <label>Titolo</label>
-            <div className="input-with-btn">
-              <input
-                ref={inputRef}
-                className="input"
-                value={title}
-                onChange={e => onTitleChange(e.target.value)}
-                placeholder={isSerie ? "es. Twin Peaks" : "es. Metropolis"}
-                autoFocus={!initial}
-                autoComplete="off"
-                autoCorrect="off"
-                spellCheck="false"
-                onFocus={() => title.trim().length >= 2 && suggestions.length && setShowSug(true)}
-              />
-              <button type="button" className="search-btn" onClick={onManualSearch} disabled={!title.trim() || loadingSug}>
-                {loadingSug ? <span className="spin"></span> : <Icon.Sparkle />}
-                <span>Cerca</span>
-              </button>
-              {showSug && (
-                <div className="suggestions" onClick={e => e.stopPropagation()}>
-                  {loadingSug && <div className="sugg-loading"><span className="spin" style={{verticalAlign:"middle",marginRight:8}}></span>Ricerca in corso…</div>}
-                  {!loadingSug && searchError && (
-                    <div className="sugg-empty">{searchError}</div>
-                  )}
-                  {!loadingSug && !searchError && suggestions.map(s => (
-                    <div key={s.id + (s.qid||"")} className="sugg-item" onClick={() => onPickSuggestion(s)}>
-                      <div className="sugg-body">
-                        <div className="sugg-title">{s.title}</div>
-                        <div className="sugg-meta">
-                          {s.year || "—"}
-                          {s.directors && <span> · {s.directors.length > 40 ? s.directors.slice(0,38)+"…" : s.directors}</span>}
-                          {!s.directors && s.stars && <span> · {s.stars}</span>}
-                        </div>
+        <div className="field">
+          <label>Titolo</label>
+          <div className="input-with-btn">
+            <input
+              ref={inputRef}
+              className="input"
+              value={title}
+              onChange={e => onTitleChange(e.target.value)}
+              placeholder={isSerie ? "es. Twin Peaks" : "es. Metropolis"}
+              autoFocus={!initial}
+              autoComplete="off"
+              autoCorrect="off"
+              spellCheck="false"
+              onFocus={() => title.trim().length >= 2 && suggestions.length && setShowSug(true)}
+            />
+            <button type="button" className="search-btn" onClick={onManualSearch} disabled={!title.trim() || loadingSug}>
+              {loadingSug ? <span className="spin"></span> : <Icon.Sparkle />}
+              <span>Cerca</span>
+            </button>
+            {showSug && (
+              <div className="suggestions" onClick={e => e.stopPropagation()}>
+                {loadingSug && <div className="sugg-loading"><span className="spin" style={{verticalAlign:"middle",marginRight:8}}></span>Ricerca in corso…</div>}
+                {!loadingSug && searchError && (
+                  <div className="sugg-empty">{searchError}</div>
+                )}
+                {!loadingSug && !searchError && suggestions.map(s => (
+                  <div key={s.id + (s.qid||"")} className="sugg-item" onClick={() => onPickSuggestion(s)}>
+                    <div className="sugg-body">
+                      <div className="sugg-title">{s.title}</div>
+                      <div className="sugg-meta">
+                        {s.year || "—"}
+                        {s.directors && <span> · {s.directors.length > 40 ? s.directors.slice(0,38)+"…" : s.directors}</span>}
+                        {!s.directors && s.stars && <span> · {s.stars}</span>}
                       </div>
                     </div>
-                  ))}
-                </div>
-              )}
-            </div>
-            {fetchingDir && (
-              <div className="sugg-dir-fetch">
-                <span className="spin"></span> Ricerca regista…
+                  </div>
+                ))}
               </div>
             )}
           </div>
+          {fetchingDir && (
+            <div className="sugg-dir-fetch">
+              <span className="spin"></span> Ricerca regista…
+            </div>
+          )}
+        </div>
 
+        <div className="field">
+          <label>Titolo originale <span style={{opacity:.5, textTransform:"none", letterSpacing:0}}>(facoltativo)</span></label>
+          <input
+            className="input"
+            value={originalTitle}
+            onChange={e => setOriginalTitle(e.target.value)}
+            placeholder={isSerie ? "es. Twin Peaks" : "es. Metropolis"}
+          />
+        </div>
+
+        {isSerie ? (
           <div className="field">
-            <label>Titolo originale <span style={{opacity:.5, textTransform:"none", letterSpacing:0}}>(facoltativo)</span></label>
+            <label>Anno</label>
             <input
               className="input"
-              value={originalTitle}
-              onChange={e => setOriginalTitle(e.target.value)}
-              placeholder={isSerie ? "es. Twin Peaks" : "es. Metropolis"}
+              type="number"
+              inputMode="numeric"
+              value={year}
+              onChange={e => setYear(e.target.value)}
+              placeholder="es. 1990"
             />
           </div>
-
-          {isSerie ? (
+        ) : (
+          <div className="inline-row">
             <div className="field">
               <label>Anno</label>
               <input
@@ -1448,66 +1509,46 @@ function EditSheet({ initial, defaultIsSerie, onClose, onSave, onDelete }) {
                 inputMode="numeric"
                 value={year}
                 onChange={e => setYear(e.target.value)}
-                placeholder="es. 1990"
+                placeholder="es. 1927"
               />
             </div>
-          ) : (
-            <div className="inline-row">
-              <div className="field">
-                <label>Anno</label>
-                <input
-                  className="input"
-                  type="number"
-                  inputMode="numeric"
-                  value={year}
-                  onChange={e => setYear(e.target.value)}
-                  placeholder="es. 1927"
-                />
-              </div>
-              <div className="field" style={{flex:2}}>
-                <label>Regia</label>
-                <input
-                  className="input"
-                  value={directors}
-                  onChange={e => setDirectors(e.target.value)}
-                  placeholder="es. Fritz Lang"
-                />
-              </div>
+            <div className="field" style={{flex:2}}>
+              <label>Regia</label>
+              <input
+                className="input"
+                value={directors}
+                onChange={e => setDirectors(e.target.value)}
+                placeholder="es. Fritz Lang"
+              />
             </div>
-          )}
-
-          <div className="field">
-            <button
-              type="button"
-              className={`chip-btn ${favorite?"active":""}`}
-              style={{padding:"11px 14px"}}
-              onClick={() => setFavorite(v => !v)}
-            >
-              <Icon.Heart filled={favorite} />
-              {favorite ? "Tra i preferiti" : "Aggiungi ai preferiti"}
-            </button>
           </div>
+        )}
 
-          {onDelete && (
-            <div style={{marginTop:18, paddingTop:14, borderTop:"1px solid var(--line)"}}>
-              <button
-                className="btn btn-danger-ghost"
-                onClick={() => { if (confirm("Eliminare questo titolo?")) onDelete(); }}
-                style={{padding:"10px 0"}}
-              >
-                <Icon.Trash /> Elimina
-              </button>
-            </div>
-          )}
-        </div>
-        <div className="sheet-footer">
-          <button className="btn btn-secondary" onClick={onClose}>Annulla</button>
-          <button className="btn btn-primary" disabled={!canSave} onClick={submit}>
-            {initial ? "Salva" : "Aggiungi"}
+        <div className="field">
+          <button
+            type="button"
+            className={`chip-btn ${favorite?"active":""}`}
+            style={{padding:"11px 14px"}}
+            onClick={() => setFavorite(v => !v)}
+          >
+            <Icon.Heart filled={favorite} />
+            {favorite ? "Tra i preferiti" : "Aggiungi ai preferiti"}
           </button>
         </div>
+
+        {onDelete && (
+          <div style={{marginTop:28, paddingTop:18, borderTop:"1px solid var(--line)"}}>
+            <button
+              className="btn btn-danger-ghost"
+              onClick={() => { if (confirm("Eliminare questo titolo?")) onDelete(); }}
+              style={{padding:"10px 0"}}
+            >
+              <Icon.Trash /> Elimina
+            </button>
+          </div>
+        )}
       </div>
-    </>
+    </div>
   );
 }
 
