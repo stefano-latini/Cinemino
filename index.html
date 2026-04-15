@@ -556,7 +556,26 @@ const STORAGE_KEY = "cinemino.v1";
 function loadItems() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) return JSON.parse(raw);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return null;
+    // Migration: repair items missing a valid id (legacy bug where new items
+    // were saved with id: undefined). Assign a fresh uid so they become
+    // independently addressable.
+    let needsRepair = false;
+    const seen = new Set();
+    const fixed = parsed.map(it => {
+      if (!it || typeof it !== "object") return it;
+      if (!it.id || seen.has(it.id)) {
+        needsRepair = true;
+        const newId = "l-" + Math.random().toString(36).slice(2,10) + Date.now().toString(36).slice(-4) + "-" + Math.floor(Math.random()*1000);
+        seen.add(newId);
+        return { ...it, id: newId };
+      }
+      seen.add(it.id);
+      return it;
+    });
+    return fixed;
   } catch (e) { /* ignore */ }
   return null;
 }
@@ -824,15 +843,25 @@ function App() {
 
   const saveItem = (data) => {
     if (data.id) {
-      setItems(prev => prev.map(i => i.id === data.id ? { ...i, ...data } : i));
+      setItems(prev => prev.map(i => i.id === data.id ? { ...i, ...data, id: i.id } : i));
       showToast("Modifiche salvate");
     } else {
+      // Duplicate guard for newly added items (only when imdbId present)
+      if (data.imdbId) {
+        const dup = items.find(i => i.imdbId && i.imdbId === data.imdbId);
+        if (dup) {
+          if (!confirm(`"${dup.title}" è già nella tua libreria. Aggiungere comunque?`)) {
+            closeEdit();
+            return;
+          }
+        }
+      }
       const newItem = {
-        id: uid(),
-        favorite: false,
+        ...data,
+        id: uid(),  // id LAST, so spread cannot overwrite it with undefined
+        favorite: !!data.favorite,
         createdAt: new Date().toISOString().slice(0,10),
         type: data.isSerie ? "Serie TV" : "Film",
-        ...data,
       };
       delete newItem.isSerie;
       setItems(prev => [newItem, ...prev]);
@@ -843,6 +872,7 @@ function App() {
   };
 
   const deleteItem = (id) => {
+    if (!id) { closeEdit(); return; } // safety: never bulk-delete items with no id
     setItems(prev => prev.filter(i => i.id !== id));
     closeEdit();
     showToast("Eliminato");
