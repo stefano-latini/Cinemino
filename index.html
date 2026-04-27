@@ -321,6 +321,44 @@ async function searchFilms(query) {
   return merged.slice(0,10);
 }
 
+async function fetchDetailsFromWikidata(imdbId) {
+  if (!imdbId) return null;
+  const sparql = `SELECT
+    (GROUP_CONCAT(DISTINCT ?dirName; separator=", ") AS ?directors)
+    (GROUP_CONCAT(DISTINCT ?genName; separator=", ") AS ?genres)
+    (SAMPLE(?duration) AS ?runtime)
+    (SAMPLE(?rating) AS ?imdbRating)
+  WHERE {
+    ?film wdt:P345 "${imdbId}" .
+    OPTIONAL { ?film wdt:P57 ?dir . ?dir rdfs:label ?dlbl .
+      FILTER(LANG(?dlbl)="it"||LANG(?dlbl)="en") BIND(STR(?dlbl) AS ?dirName) }
+    OPTIONAL { ?film wdt:P136 ?gen . ?gen rdfs:label ?glbl .
+      FILTER(LANG(?glbl)="it") BIND(STR(?glbl) AS ?genName) }
+    OPTIONAL { ?film wdt:P2047 ?duration }
+    OPTIONAL { ?film p:P444 ?rev . ?rev pq:P459 wd:Q105584 . ?rev ps:P444 ?ratingStr . BIND(xsd:decimal(?ratingStr) AS ?rating) }
+  }`;
+  const url = 'https://query.wikidata.org/sparql?format=json&query=' + encodeURIComponent(sparql);
+  try {
+    const r = await fetch(url, { headers: { Accept: 'application/sparql-results+json' } });
+    if (!r.ok) return null;
+    const data = await r.json();
+    const b = data.results?.bindings?.[0];
+    if (!b) return null;
+    const dedup = s => {
+      if (!s) return '';
+      const seen = new Set();
+      return s.split(',').map(x=>x.trim()).filter(x=>{ const k=x.toLowerCase(); if(!x||seen.has(k)) return false; seen.add(k); return true; }).join(', ');
+    };
+    const titleCase = s => s.split(', ').map(g => g ? g[0].toUpperCase()+g.slice(1) : g).join(', ');
+    return {
+      directors: dedup(b.directors?.value),
+      genres: titleCase(dedup(b.genres?.value)),
+      runtime: b.runtime?.value ? Math.round(parseFloat(b.runtime.value)) : null,
+      imdbRating: b.imdbRating?.value ? parseFloat(b.imdbRating.value) : null,
+    };
+  } catch(e) { return null; }
+}
+
 async function fetchDirectorFromWikidata(imdbId) {
   if (!imdbId) return null;
   const sparql = `SELECT (GROUP_CONCAT(DISTINCT ?name; separator=", ") AS ?directors) WHERE {
@@ -398,7 +436,8 @@ function App() {
     if (tab === 'film' && favOnly) out = out.filter(i => i.favorite);
     if (q) out = out.filter(i =>
       norm(i.title).includes(q) || norm(i.originalTitle).includes(q) ||
-      norm(i.directors).includes(q) || norm(i.recommendedBy).includes(q)
+      norm(i.directors).includes(q) || norm(i.recommendedBy).includes(q) ||
+      norm(i.genres).includes(q)
     );
     const byTitle = (a,b) => norm(a.title).localeCompare(norm(b.title),'it');
     if (sortMode === 'anno')    return [...out].sort((a,b) => (b.year||0)-(a.year||0) || byTitle(a,b));
@@ -665,7 +704,7 @@ function Toolbar({ query, setQuery, favOnly, setFavOnly, sortMode, setSortMode, 
     <div className="toolbar">
       <div className="search-box">
         <Icon.Search />
-        <input type="search" placeholder="Cerca titolo, regia…" value={query} onChange={e=>setQuery(e.target.value)} />
+        <input type="search" placeholder="Cerca titolo, regia, genere…" value={query} onChange={e=>setQuery(e.target.value)} />
       </div>
       <button className="chip-btn" onClick={cycle} aria-label="Ordinamento"><Icon.Sort /><span>{labels[sortMode]}</span></button>
       {showFavFilter && (
@@ -767,6 +806,9 @@ function EditSheet({ initial, defaultIsDV, onClose, onSave, onDelete }) {
   const [isWL, setIsWL]             = useState(initial ? isDaVedere(initial) : !!defaultIsDV);
   const [imdbId, setImdbId]         = useState(initial?.imdbId||'');
   const [qid, setQid]               = useState(initial?.qid||'');
+  const [genres, setGenres]         = useState(initial?.genres||'');
+  const [runtime, setRuntime]       = useState(initial?.runtime||'');
+  const [imdbRating, setImdbRating] = useState(initial?.imdbRating||'');
   const [liveEnabled, setLiveEnabled] = useState(!initial);
   const [suggestions, setSuggestions]= useState([]);
   const [loadingSug, setLoadingSug] = useState(false);
@@ -796,12 +838,20 @@ function EditSheet({ initial, defaultIsDV, onClose, onSave, onDelete }) {
     setTitle(s.title); setOriginalTitle(s.title);
     if (s.year) setYear(s.year); if (s.imdbId) setImdbId(s.imdbId); if (s.qid) setQid(s.qid);
     setShowSug(false); setSuggestions([]); setLiveEnabled(false); setSearchError('');
-    if (s.directors) { setDirectors(s.directors); }
-    else if (s.imdbId) {
-      setFetchingDir(true);
-      try { const d = await fetchDirectorFromWikidata(s.imdbId); if(d) setDirectors(d); } catch{}
-      finally { setFetchingDir(false); }
-    }
+    if (s.directors) setDirectors(s.directors);
+    if (!s.imdbId) return;
+    // Always enrich from Wikidata: it can provide director (if missing), genres, runtime and IMDb rating.
+    setFetchingDir(true);
+    try {
+      const d = await fetchDetailsFromWikidata(s.imdbId);
+      if (d) {
+        if (d.directors && !s.directors) setDirectors(d.directors);
+        if (d.genres) setGenres(d.genres);
+        if (d.runtime) setRuntime(d.runtime);
+        if (d.imdbRating) setImdbRating(d.imdbRating);
+      }
+    } catch{}
+    finally { setFetchingDir(false); }
   };
 
   const manualSearch = async () => {
@@ -841,7 +891,9 @@ function EditSheet({ initial, defaultIsDV, onClose, onSave, onDelete }) {
       recommendedBy: isWL ? recommendedBy.trim() : '',
       favorite: isWL ? false : favorite,
       isDaVedere: isWL,
-      genres: initial?.genres||'', runtime: initial?.runtime||null, imdbRating: initial?.imdbRating||null,
+      genres: typeof genres === 'string' ? genres.trim() : (genres||''),
+      runtime: runtime ? parseInt(runtime,10) : null,
+      imdbRating: imdbRating ? parseFloat(imdbRating) : null,
     });
   };
 
@@ -915,6 +967,26 @@ function EditSheet({ initial, defaultIsDV, onClose, onSave, onDelete }) {
             <label>Consigliato da <span style={{opacity:.5,textTransform:'none',letterSpacing:0}}>(facoltativo)</span></label>
             <input className="input" value={recommendedBy} onChange={e=>setRecommendedBy(e.target.value)} placeholder="es. Marco, Luca…" />
           </div>
+        )}
+
+        {/* Generi / Durata / Voto (solo Film visto, popolati automaticamente da Cerca) */}
+        {!isWL && (
+          <>
+            <div className="field">
+              <label>Generi <span style={{opacity:.5,textTransform:'none',letterSpacing:0}}>(facoltativo)</span></label>
+              <input className="input" value={genres} onChange={e=>setGenres(e.target.value)} placeholder="es. Drammatico, Fantascienza" />
+            </div>
+            <div className="inline-row">
+              <div className="field">
+                <label>Durata <span style={{opacity:.5,textTransform:'none',letterSpacing:0}}>(min)</span></label>
+                <input className="input" type="number" inputMode="numeric" value={runtime} onChange={e=>setRuntime(e.target.value)} placeholder="es. 124" />
+              </div>
+              <div className="field">
+                <label>Voto IMDb</label>
+                <input className="input" type="number" inputMode="decimal" step="0.1" min="0" max="10" value={imdbRating} onChange={e=>setImdbRating(e.target.value)} placeholder="es. 7.8" />
+              </div>
+            </div>
+          </>
         )}
 
         {/* Preferito (solo Film visto) */}
