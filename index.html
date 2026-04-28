@@ -76,6 +76,10 @@ input, textarea { -webkit-appearance: none; appearance: none; }
 .chip-btn { padding: 9px 12px; border-radius: 999px; border: 1px solid var(--line); background: var(--bg-elev); font-size: 13px; font-weight: 500; color: var(--ink-soft); display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; transition: all .15s; }
 .chip-btn.active { background: var(--accent-bg); border-color: var(--accent-soft); color: var(--accent); }
 .chip-btn svg { width: 14px; height: 14px; }
+.genre-grid { display: flex; flex-wrap: wrap; gap: 6px; }
+.genre-chip { padding: 7px 11px; border-radius: 999px; border: 1px solid var(--line); background: var(--bg-elev); font-size: 13px; font-weight: 500; color: var(--ink-soft); transition: all .12s; }
+.genre-chip.on { background: var(--accent-bg); border-color: var(--accent-soft); color: var(--accent); }
+.genre-chip:active { transform: scale(.96); }
 
 /* List / Cards */
 .list { padding: 4px 12px 20px; }
@@ -132,6 +136,10 @@ input, textarea { -webkit-appearance: none; appearance: none; }
 .detail-fav svg { width: 24px; height: 24px; }
 .detail-rows { padding: 6px 22px; }
 .detail-row { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; padding: 14px 0; border-bottom: 1px solid var(--line); }
+.detail-row-stack { flex-direction: column; align-items: stretch; gap: 8px; }
+.detail-row-stack .detail-row-label { color: var(--muted); font-size: 13px; }
+.detail-genres { display: flex; flex-wrap: wrap; gap: 6px; }
+.detail-genre-chip { font-size: 12.5px; padding: 5px 10px; border-radius: 999px; background: var(--accent-bg); color: var(--accent); border: 1px solid var(--accent-soft); white-space: nowrap; }
 .detail-row:last-child { border-bottom: 0; }
 .detail-row-label { font-size: 13px; color: var(--muted); font-weight: 500; flex-shrink: 0; }
 .detail-row-value { font-size: 15px; color: var(--ink); text-align: right; word-wrap: break-word; min-width: 0; }
@@ -211,8 +219,16 @@ function loadItems() {
     if (!Array.isArray(parsed)) return null;
     const seen = new Set();
     return parsed.filter(it => it && typeof it === 'object' && it.title).map(it => {
-      if (!it.id || seen.has(it.id)) { const id = uid(); seen.add(id); return { ...it, id }; }
-      seen.add(it.id); return it;
+      let item = it;
+      if (!item.id || seen.has(item.id)) { const id = uid(); seen.add(id); item = { ...item, id }; }
+      else { seen.add(item.id); }
+      // Migrate genres: if not already a canonical comma list, normalize from raw input.
+      if (item.genres) {
+        const canon = normalizeGenres(item.genres);
+        if (canon.length) item = { ...item, genres: canon.join(', ') };
+        else item = { ...item, genres: '' };
+      }
+      return item;
     });
   } catch (e) { return null; }
 }
@@ -226,6 +242,72 @@ const uid  = () => 'l-' + Date.now().toString(36) + '-' + (++_uid).toString(36) 
 const norm = s  => (s||'').toString().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
 
 function isDaVedere(i) { return (i.type||'').toLowerCase().includes('da vedere'); }
+
+/* ── Generi: tassonomia canonica IT (allineata a IMDb) ── */
+const GENRES = [
+  'Animazione','Avventura','Azione','Biografico','Commedia','Cortometraggio','Crime',
+  'Documentario','Drammatico','Famiglia','Fantascienza','Fantasy','Guerra','Horror',
+  'Mistero','Musical','Noir','Reality','Romantico','Sport','Storia','Thriller','Western'
+];
+
+// Mappa input grezzo → genere canonico. Accetta:
+// - generi IMDb in inglese ("Sci-Fi", "Drama", "Film-Noir")
+// - generi italiani in varianti ("Fantascienza", "Drammatico", "fantasy")
+// - frasi vaghe da Wikidata ("Film thriller", "Film di fantascienza", "Film per ragazzi")
+const GENRE_MAP = (() => {
+  const m = new Map();
+  const add = (key, canonical) => m.set(norm(key), canonical);
+
+  // Identità italiana
+  GENRES.forEach(g => add(g, g));
+
+  // Mapping IMDb (inglese) → italiano
+  const en = {
+    'Action':'Azione', 'Adventure':'Avventura', 'Animation':'Animazione',
+    'Biography':'Biografico', 'Comedy':'Commedia', 'Crime':'Crime',
+    'Documentary':'Documentario', 'Drama':'Drammatico', 'Family':'Famiglia',
+    'Fantasy':'Fantasy', 'Film-Noir':'Noir', 'Film Noir':'Noir', 'Noir':'Noir',
+    'History':'Storia', 'Horror':'Horror', 'Music':'Musical', 'Musical':'Musical',
+    'Mystery':'Mistero', 'Reality-TV':'Reality', 'Reality':'Reality',
+    'Romance':'Romantico', 'Sci-Fi':'Fantascienza', 'Science Fiction':'Fantascienza',
+    'Short':'Cortometraggio', 'Sport':'Sport', 'Thriller':'Thriller',
+    'War':'Guerra', 'Western':'Western',
+  };
+  Object.entries(en).forEach(([k,v]) => add(k, v));
+
+  // Varianti / sinonimi tipici
+  add('biografia','Biografico'); add('avventuroso','Avventura');
+  add('drama','Drammatico'); add('fantastico','Fantasy');
+  add('giallo','Mistero'); add('poliziesco','Crime');
+  add('orrore','Horror'); add('comico','Commedia');
+  add('film per ragazzi','Famiglia'); add('per ragazzi','Famiglia');
+  add('per bambini','Famiglia'); add('film d\'animazione','Animazione');
+  add('film thriller','Thriller'); add('film d\'azione','Azione');
+  add('film d\'avventura','Avventura'); add('film dell\'orrore','Horror');
+  add('film di mostri','Horror'); add('film horror','Horror');
+  add('film di fantascienza','Fantascienza'); add('film di fantascienza d\'azione','Fantascienza');
+  add('film drammatico','Drammatico'); add('film commedia','Commedia');
+  add('film romantico','Romantico'); add('film western','Western');
+  add('film di guerra','Guerra'); add('film storico','Storia');
+  add('film noir','Noir'); add('film musicale','Musical');
+  add('film documentario','Documentario'); add('film biografico','Biografico');
+  add('cortometraggio d\'animazione','Cortometraggio');
+  return m;
+})();
+
+// Normalizza una stringa di generi (separati da virgola) in array di canonici, deduplicato.
+function normalizeGenres(input) {
+  if (!input) return [];
+  const seen = new Set();
+  const out = [];
+  for (const raw of String(input).split(/[,;|]/)) {
+    const cleaned = raw.trim();
+    if (!cleaned) continue;
+    const canon = GENRE_MAP.get(norm(cleaned));
+    if (canon && !seen.has(canon)) { seen.add(canon); out.push(canon); }
+  }
+  return out;
+}
 
 function csvEscape(v) {
   if (v == null) return '';
@@ -322,40 +404,25 @@ async function searchFilms(query) {
 }
 
 async function fetchDetailsFromWikidata(imdbId) {
+  // Fetch director(s) from Wikidata. Genres / runtime / IMDb rating are NOT fetched
+  // here because Wikidata's data quality on these fields is poor (vague taxonomy,
+  // sparse rating coverage). Genres are managed via the canonical taxonomy in GENRES.
   if (!imdbId) return null;
-  const sparql = `SELECT
-    (GROUP_CONCAT(DISTINCT ?dirName; separator=", ") AS ?directors)
-    (GROUP_CONCAT(DISTINCT ?genName; separator=", ") AS ?genres)
-    (SAMPLE(?duration) AS ?runtime)
-    (SAMPLE(?rating) AS ?imdbRating)
-  WHERE {
+  const sparql = `SELECT (GROUP_CONCAT(DISTINCT ?dirName; separator=", ") AS ?directors) WHERE {
     ?film wdt:P345 "${imdbId}" .
-    OPTIONAL { ?film wdt:P57 ?dir . ?dir rdfs:label ?dlbl .
-      FILTER(LANG(?dlbl)="it"||LANG(?dlbl)="en") BIND(STR(?dlbl) AS ?dirName) }
-    OPTIONAL { ?film wdt:P136 ?gen . ?gen rdfs:label ?glbl .
-      FILTER(LANG(?glbl)="it") BIND(STR(?glbl) AS ?genName) }
-    OPTIONAL { ?film wdt:P2047 ?duration }
-    OPTIONAL { ?film p:P444 ?rev . ?rev pq:P459 wd:Q105584 . ?rev ps:P444 ?ratingStr . BIND(xsd:decimal(?ratingStr) AS ?rating) }
+    ?film wdt:P57 ?dir . ?dir rdfs:label ?dlbl .
+    FILTER(LANG(?dlbl)="it"||LANG(?dlbl)="en") BIND(STR(?dlbl) AS ?dirName)
   }`;
   const url = 'https://query.wikidata.org/sparql?format=json&query=' + encodeURIComponent(sparql);
   try {
     const r = await fetch(url, { headers: { Accept: 'application/sparql-results+json' } });
     if (!r.ok) return null;
     const data = await r.json();
-    const b = data.results?.bindings?.[0];
-    if (!b) return null;
-    const dedup = s => {
-      if (!s) return '';
-      const seen = new Set();
-      return s.split(',').map(x=>x.trim()).filter(x=>{ const k=x.toLowerCase(); if(!x||seen.has(k)) return false; seen.add(k); return true; }).join(', ');
-    };
-    const titleCase = s => s.split(', ').map(g => g ? g[0].toUpperCase()+g.slice(1) : g).join(', ');
-    return {
-      directors: dedup(b.directors?.value),
-      genres: titleCase(dedup(b.genres?.value)),
-      runtime: b.runtime?.value ? Math.round(parseFloat(b.runtime.value)) : null,
-      imdbRating: b.imdbRating?.value ? parseFloat(b.imdbRating.value) : null,
-    };
+    const v = data.results?.bindings?.[0]?.directors?.value;
+    if (!v) return null;
+    const seen = new Set();
+    const directors = v.split(',').map(s=>s.trim()).filter(s=>{ const k=s.toLowerCase(); if(!s||seen.has(k)) return false; seen.add(k); return true; }).join(', ');
+    return { directors };
   } catch(e) { return null; }
 }
 
@@ -572,7 +639,7 @@ function App() {
           if (imdbId && existingImdb.has(imdbId)) { skipped++; return; }
           let id = raw.id||imdbId||uid(); if (existingIds.has(id)) id=uid();
           existingIds.add(id); if (imdbId) existingImdb.add(imdbId);
-          toAdd.push({ id, imdbId, qid:raw.qid||'', title:raw.title, originalTitle:raw.originalTitle||raw.original_title||'', year:raw.year?parseInt(raw.year,10):null, directors:raw.directors||raw.director||'', genres:raw.genres||'', runtime:raw.runtime?parseInt(raw.runtime,10):null, imdbRating:raw.imdbRating?parseFloat(raw.imdbRating):null, createdAt:raw.createdAt||new Date().toISOString().slice(0,10), type:raw.type||'Film', favorite:!!raw.favorite, recommendedBy:raw.recommendedBy||'' });
+          toAdd.push({ id, imdbId, qid:raw.qid||'', title:raw.title, originalTitle:raw.originalTitle||raw.original_title||'', year:raw.year?parseInt(raw.year,10):null, directors:raw.directors||raw.director||'', genres:normalizeGenres(raw.genres||'').join(', '), runtime:raw.runtime?parseInt(raw.runtime,10):null, imdbRating:raw.imdbRating?parseFloat(raw.imdbRating):null, createdAt:raw.createdAt||new Date().toISOString().slice(0,10), type:raw.type||'Film', favorite:!!raw.favorite, recommendedBy:raw.recommendedBy||'' });
           imported++;
         };
         if (isJson) {
@@ -778,7 +845,16 @@ function DetailView({ item, onClose, onEdit, onToggleFav, onDelete, onMarkWatche
           {item.year     && <div className="detail-row"><span className="detail-row-label">Anno</span><span className="detail-row-value">{item.year}</span></div>}
           {item.directors&& <div className="detail-row"><span className="detail-row-label">Regia</span><span className="detail-row-value">{item.directors}</span></div>}
           {dv && item.recommendedBy && <div className="detail-row"><span className="detail-row-label">Consigliato da</span><span className="detail-row-value">{item.recommendedBy}</span></div>}
-          {item.genres   && <div className="detail-row"><span className="detail-row-label">Generi</span><span className="detail-row-value">{item.genres}</span></div>}
+          {item.genres && (
+            <div className="detail-row detail-row-stack">
+              <span className="detail-row-label">Generi</span>
+              <div className="detail-genres">
+                {normalizeGenres(item.genres).map(g =>
+                  <span key={g} className="detail-genre-chip">{g}</span>
+                )}
+              </div>
+            </div>
+          )}
           {item.runtime  && <div className="detail-row"><span className="detail-row-label">Durata</span><span className="detail-row-value">{item.runtime} min</span></div>}
           {item.imdbRating&&<div className="detail-row"><span className="detail-row-label">IMDb</span><span className="detail-row-value">{item.imdbRating.toFixed(1)}</span></div>}
         </div>
@@ -806,7 +882,7 @@ function EditSheet({ initial, defaultIsDV, onClose, onSave, onDelete }) {
   const [isWL, setIsWL]             = useState(initial ? isDaVedere(initial) : !!defaultIsDV);
   const [imdbId, setImdbId]         = useState(initial?.imdbId||'');
   const [qid, setQid]               = useState(initial?.qid||'');
-  const [genres, setGenres]         = useState(initial?.genres||'');
+  const [genres, setGenres]         = useState(() => normalizeGenres(initial?.genres||''));
   const [runtime, setRuntime]       = useState(initial?.runtime||'');
   const [imdbRating, setImdbRating] = useState(initial?.imdbRating||'');
   const [liveEnabled, setLiveEnabled] = useState(!initial);
@@ -839,17 +915,12 @@ function EditSheet({ initial, defaultIsDV, onClose, onSave, onDelete }) {
     if (s.year) setYear(s.year); if (s.imdbId) setImdbId(s.imdbId); if (s.qid) setQid(s.qid);
     setShowSug(false); setSuggestions([]); setLiveEnabled(false); setSearchError('');
     if (s.directors) setDirectors(s.directors);
-    if (!s.imdbId) return;
-    // Always enrich from Wikidata: it can provide director (if missing), genres, runtime and IMDb rating.
+    if (!s.imdbId || s.directors) return;
+    // Enrich missing director from Wikidata. Genres are managed via canonical tags.
     setFetchingDir(true);
     try {
       const d = await fetchDetailsFromWikidata(s.imdbId);
-      if (d) {
-        if (d.directors && !s.directors) setDirectors(d.directors);
-        if (d.genres) setGenres(d.genres);
-        if (d.runtime) setRuntime(d.runtime);
-        if (d.imdbRating) setImdbRating(d.imdbRating);
-      }
+      if (d?.directors) setDirectors(d.directors);
     } catch{}
     finally { setFetchingDir(false); }
   };
@@ -891,7 +962,7 @@ function EditSheet({ initial, defaultIsDV, onClose, onSave, onDelete }) {
       recommendedBy: isWL ? recommendedBy.trim() : '',
       favorite: isWL ? false : favorite,
       isDaVedere: isWL,
-      genres: typeof genres === 'string' ? genres.trim() : (genres||''),
+      genres: Array.isArray(genres) ? genres.join(', ') : (genres||''),
       runtime: runtime ? parseInt(runtime,10) : null,
       imdbRating: imdbRating ? parseFloat(imdbRating) : null,
     });
@@ -969,12 +1040,22 @@ function EditSheet({ initial, defaultIsDV, onClose, onSave, onDelete }) {
           </div>
         )}
 
-        {/* Generi / Durata / Voto (solo Film visto, popolati automaticamente da Cerca) */}
+        {/* Generi / Durata / Voto (solo Film visto) */}
         {!isWL && (
           <>
             <div className="field">
               <label>Generi <span style={{opacity:.5,textTransform:'none',letterSpacing:0}}>(facoltativo)</span></label>
-              <input className="input" value={genres} onChange={e=>setGenres(e.target.value)} placeholder="es. Drammatico, Fantascienza" />
+              <div className="genre-grid">
+                {GENRES.map(g => {
+                  const on = genres.includes(g);
+                  return (
+                    <button key={g} type="button"
+                      className={`genre-chip ${on?'on':''}`}
+                      onClick={()=>setGenres(on ? genres.filter(x=>x!==g) : [...genres, g])}
+                    >{g}</button>
+                  );
+                })}
+              </div>
             </div>
             <div className="inline-row">
               <div className="field">
